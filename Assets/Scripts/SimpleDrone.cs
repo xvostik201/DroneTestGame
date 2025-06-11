@@ -5,22 +5,22 @@ using System.Collections.Generic;
 public class SimpleDrone : MonoBehaviour
 {
     [Header("Flight Settings")]
-    [SerializeField] private float flyHeight = 10f;
-    [SerializeField] private float takeoffSpeed = 5f;
-    [SerializeField] private float landingSpeed = 5f;
+    [SerializeField] private float _flyHeight = 10f;
+    [SerializeField] private float _takeoffSpeed = 5f;
+    [SerializeField] private float _landingSpeed = 5f;
 
     [Header("Movement Settings")]
     [SerializeField] private float _cruiseSpeed = 5f;
-    [SerializeField] private float maxAcceleration = 10f;
-    [SerializeField] private float separationDistance = 2f;
-    [SerializeField] private float separationWeight = 1f;
+    [SerializeField] private float _maxAcceleration = 10f;
+    [SerializeField] private float _separationDistance = 2f;
+    [SerializeField] private float _separationWeight = 1f;
 
     [Header("Avoidance Settings")]
-    [SerializeField] private float rayDistance = 5f;
+    [SerializeField] private float _rayDistance = 5f;
 
     [Header("Blade Settings")]
-    [SerializeField] private Transform[] blades;
-    [SerializeField] private float bladeSpeedFactor = 200f;
+    [SerializeField] private Transform[] _blades;
+    [SerializeField] private float _bladeSpeedFactor = 200f;
 
     [Header("Drop-Off Point")]
     public Transform dropPoint;
@@ -28,31 +28,36 @@ public class SimpleDrone : MonoBehaviour
     [Header("Body Color")]
     [SerializeField] private MeshRenderer _bodyMesh;
 
+    [HideInInspector] public MillitaryBase HomeBase;
+    [HideInInspector] public List<Vector3> PathPoints = new List<Vector3>();
+
+    private Vector3 lastMovePos;
+    private float stuckTimer;
+
+    private ResourceNode _reserved;
+    private Vector3 _startPos, _lastPos;
+
+    private const float queueSpacing = 1.5f;
+
     public float CruiseSpeed
     {
         get => _cruiseSpeed;
         set => _cruiseSpeed = value;
     }
 
-    [HideInInspector] public MillitaryBase HomeBase;
-    [HideInInspector] public List<Vector3> PathPoints = new List<Vector3>();
-
-    private ResourceNode _reserved;
-    private Vector3 _startPos, _lastPos;
-    private const float queueSpacing = 1.5f;
-
     private void Start()
     {
         _startPos = transform.position;
         _lastPos = transform.position;
+        lastMovePos = transform.position;
         ColorTo(HomeBase.Color);
     }
 
     private void Update()
     {
         float vel = (transform.position - _lastPos).magnitude / Time.deltaTime;
-        foreach (var b in blades)
-            b.Rotate(0, 0, vel * bladeSpeedFactor * Time.deltaTime, Space.Self);
+        foreach (var b in _blades)
+            b.Rotate(0, 0, vel * _bladeSpeedFactor * Time.deltaTime, Space.Self);
         _lastPos = transform.position;
     }
 
@@ -69,33 +74,37 @@ public class SimpleDrone : MonoBehaviour
         var target = FindClosestResource();
         if (target == null) yield break;
 
-        yield return VerticalLift(flyHeight);
-        yield return MoveTo(new Vector3(target.transform.position.x, flyHeight, target.transform.position.z));
+        yield return VerticalLift(_flyHeight);
+        yield return MoveTo(new Vector3(target.transform.position.x, _flyHeight, target.transform.position.z));
         yield return VerticalLift(target.transform.position.y);
         yield return new WaitForSeconds(2f);
         Destroy(target.gameObject);
 
-        yield return VerticalLift(flyHeight);
+        yield return VerticalLift(_flyHeight);
 
         Vector3 dp = dropPoint.position;
-        yield return MoveTo(new Vector3(dp.x, flyHeight, dp.z));
+        yield return MoveTo(new Vector3(dp.x, _flyHeight, dp.z));
 
         int idx = HomeBase.EnqueueDrop(this);
-        Vector3 hold = new Vector3(dp.x + idx * queueSpacing, flyHeight, dp.z);
+        Vector3 hold = new Vector3(dp.x + idx * queueSpacing, _flyHeight, dp.z);
         yield return MoveTo(hold);
 
-        yield return new WaitUntil(() => HomeBase.GetDropIndex(this) == 0);
+        float waitTime = 0f;
+        while (HomeBase.GetDropIndex(this) != 0 && waitTime < 5f)
+        {
+            waitTime += Time.deltaTime;
+            yield return null;
+        }
 
         yield return VerticalLift(dp.y);
         yield return new WaitForSeconds(1f);
-
         ResourceCounter.Add(HomeBase.FactionId);
         UIManager.Instance.UpdateAllCounters();
 
-        yield return VerticalLift(flyHeight);
+        yield return VerticalLift(_flyHeight);
         HomeBase.DequeueDrop(this);
 
-        yield return MoveTo(new Vector3(_startPos.x, flyHeight, _startPos.z));
+        yield return MoveTo(new Vector3(_startPos.x, _flyHeight, _startPos.z));
         yield return VerticalLift(_startPos.y);
     }
 
@@ -107,33 +116,49 @@ public class SimpleDrone : MonoBehaviour
     private IEnumerator MoveTo(Vector3 dest)
     {
         PathPoints.Clear();
-        bool flying = true;
-        while (flying)
+        lastMovePos = transform.position;
+        stuckTimer = 0f;
+
+        while (true)
         {
             PathPoints.Add(transform.position);
 
-            Vector3 forward = transform.forward;
             Vector3 dir = (dest - transform.position).normalized;
 
             Vector3 sep = Vector3.zero;
             foreach (var o in HomeBase.Drones)
-                if (o != this && Vector3.Distance(transform.position, o.transform.position) < separationDistance)
+                if (o != this && Vector3.Distance(transform.position, o.transform.position) < _separationDistance)
                     sep += (transform.position - o.transform.position).normalized;
             if (sep != Vector3.zero)
-                dir = (dir + sep * separationWeight).normalized;
+                dir = (dir + sep * _separationWeight).normalized;
 
-            Vector3 next = Physics.Raycast(transform.position, forward, out RaycastHit h, rayDistance)
-                ? Vector3.Reflect(forward, h.normal)
-                : dir;
+            Vector3 castDir = dir;
+            if (Physics.Raycast(transform.position, castDir, out RaycastHit h, _rayDistance))
+                castDir = Vector3.Reflect(castDir, h.normal);
 
-            Quaternion rot = Quaternion.LookRotation(next, Vector3.up);
-            transform.rotation = Quaternion.Slerp(transform.rotation,
-                                                 Quaternion.Euler(0, rot.eulerAngles.y, 0),
-                                                 Time.deltaTime * maxAcceleration);
+            Quaternion targetRot = Quaternion.LookRotation(castDir, Vector3.up);
+            transform.rotation = Quaternion.Slerp(
+                transform.rotation,
+                Quaternion.Euler(0, targetRot.eulerAngles.y, 0),
+                Time.deltaTime * _maxAcceleration);
 
             transform.position += transform.forward * _cruiseSpeed * Time.deltaTime;
+
+            if (Vector3.Distance(transform.position, lastMovePos) < 0.01f)
+            {
+                stuckTimer += Time.deltaTime;
+                if (stuckTimer > 1f)
+                {
+                    Vector3 kick = Quaternion.Euler(0, Random.Range(0, 360), 0) * Vector3.forward;
+                    GetComponent<Rigidbody>().AddForce(kick * _cruiseSpeed, ForceMode.Impulse);
+                    stuckTimer = 0f;
+                }
+            }
+            else stuckTimer = 0f;
+            lastMovePos = transform.position;
+
             if (Vector3.Distance(transform.position, dest) < 0.5f)
-                flying = false;
+                break;
 
             yield return null;
         }
@@ -141,9 +166,11 @@ public class SimpleDrone : MonoBehaviour
 
     private IEnumerator VerticalLift(float y)
     {
-        Vector3 from = transform.position, to = new Vector3(from.x, y, from.z);
-        float speed = y > from.y ? takeoffSpeed : landingSpeed;
-        float dur = Mathf.Abs(to.y - from.y) / speed, t = 0f;
+        Vector3 from = transform.position;
+        Vector3 to = new Vector3(from.x, y, from.z);
+        float speed = y > from.y ? _takeoffSpeed : _landingSpeed;
+        float dur = Mathf.Abs(to.y - from.y) / speed;
+        float t = 0f;
         while (t < dur)
         {
             float p = t / dur;
@@ -160,12 +187,22 @@ public class SimpleDrone : MonoBehaviour
         ResourceNode best = null;
         float md = float.MaxValue;
         foreach (var r in ResourceNode.All)
+        {
             if (!r.IsReserved)
             {
                 float d = Vector3.Distance(transform.position, r.transform.position);
-                if (d < md) { md = d; best = r; }
+                if (d < md)
+                {
+                    md = d;
+                    best = r;
+                }
             }
-        if (best != null) { best.IsReserved = true; _reserved = best; }
+        }
+        if (best != null)
+        {
+            best.IsReserved = true;
+            _reserved = best;
+        }
         return best;
     }
 

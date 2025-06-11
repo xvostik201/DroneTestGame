@@ -4,7 +4,7 @@
 public class DronePathDrawer : MonoBehaviour
 {
     [Header("Path Drawing")]
-    [SerializeField] private Color pathColor = Color.cyan;
+    [SerializeField] private Color _pathColor = Color.cyan;
 
     private LineRenderer _lr;
     private SimpleDrone _drone;
@@ -13,7 +13,7 @@ public class DronePathDrawer : MonoBehaviour
     {
         _lr = GetComponent<LineRenderer>();
         _drone = GetComponent<SimpleDrone>();
-        _lr.startColor = _lr.endColor = pathColor;
+        _lr.startColor = _lr.endColor = _pathColor;
     }
 
     private void Update()
